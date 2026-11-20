@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wavely: meet someone new</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#1b1430;--panel:#2a2145;--ink:#ece7ff;--mute:#a79ccc;--go:#ffc24b;--bad:#ff7a90;font-family:'Bricolage Grotesque',system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);height:100dvh;display:flex;flex-direction:column}
+header{display:flex;gap:12px;align-items:center;padding:12px 16px}
+h1{font-size:1.4rem;font-weight:800;margin:0;letter-spacing:-.02em;flex:1}
+input,button{font:inherit;border:0;border-radius:10px;padding:10px 14px;color:var(--ink);background:var(--panel)}
+input::placeholder{color:var(--mute)}
+button{cursor:pointer;font-weight:600}
+button:focus-visible,input:focus-visible{outline:2px solid var(--go);outline-offset:2px}
+button.go{background:var(--go);color:#2b1d00}
+button.bad{color:var(--bad)}
+main{flex:1;display:grid;grid-template-columns:1fr 320px;gap:12px;padding:0 16px 16px;min-height:0}
+.stage{position:relative;background:#000;border-radius:16px;overflow:hidden;min-height:0}
+#remote{width:100%;height:100%;object-fit:cover}
+#local{position:absolute;right:12px;bottom:12px;width:140px;border-radius:12px;border:2px solid var(--panel);transform:scaleX(-1)}
+#status{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;font-size:1.2rem;color:var(--mute);pointer-events:none}
+#status.hide{display:none}
+.side{display:flex;flex-direction:column;background:var(--panel);border-radius:16px;padding:12px;min-height:0}
+#log{flex:1;overflow:auto;display:flex;flex-direction:column;gap:6px;padding-bottom:8px}
+.m{max-width:85%;padding:8px 12px;border-radius:12px;background:var(--bg);overflow-wrap:anywhere}
+.m.me{align-self:flex-end;background:#4b3a85}
+.row{display:flex;gap:8px}.row input{flex:1;min-width:0;background:var(--bg)}
+.actions{display:flex;gap:8px;margin-top:10px}.actions button{flex:1}
+#gate{position:fixed;inset:0;background:var(--bg);display:grid;place-items:center;padding:24px;z-index:9}
+#gate div{max-width:420px}
+#gate h2{font-size:2rem;margin:0 0 8px;letter-spacing:-.02em}
+#gate p{color:var(--mute);line-height:1.5}
+@media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:55% 1fr}#local{width:96px}}
+@media(prefers-reduced-motion:no-preference){button{transition:transform .1s}button:active{transform:scale(.97)}}
+</style>
+</head>
+<body>
+<div id="gate"><div>
+  <h2>Meet someone new, face to face.</h2>
+  <p>Wavely connects you with a stranger for a one-to-one video chat. Be kind: harassment, nudity and anything involving minors are not allowed, and people who get reported are blocked.</p>
+  <p>You need a camera and microphone.</p>
+  <button class="go" id="agree">I am 18 or older. Continue</button>
+</div></div>
+
+<header>
+  <h1>Wavely</h1>
+  <select id="lang" title="Translate messages I receive into" style="font:inherit;border:0;border-radius:10px;padding:10px;color:var(--ink);background:var(--panel)">
+    <option value="">Translate: off</option><option value="en">English</option><option value="hi">Hindi</option><option value="as">Assamese</option><option value="bn">Bengali</option><option value="es">Spanish</option><option value="fr">French</option><option value="ar">Arabic</option><option value="pt">Portuguese</option><option value="ru">Russian</option><option value="id">Indonesian</option>
+  </select>
+  <input id="tag" maxlength="20" placeholder="Interest (optional)">
+  <button class="go" id="start">Start</button>
+</header>
+<main>
+  <section class="stage">
+    <video id="remote" autoplay playsinline></video>
+    <video id="local" autoplay playsinline muted></video>
+    <div id="status">Press Start to find someone.</div>
+  </section>
+  <aside class="side">
+    <div id="log" aria-live="polite"></div>
+    <div class="row"><input id="msg" placeholder="Type a message" disabled><button id="sendBtn" disabled>Send</button></div>
+    <div class="actions"><button class="go" id="next" disabled>Next</button><button class="bad" id="report" disabled>Report</button><button id="stop" disabled>Stop</button></div>
+  </aside>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let id, es, pc, stream, pending = [], tag = '', ice = [{ urls: 'stun:stun.l.google.com:19302' }];
+const api = (type, extra = {}) => fetch('/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, type, ...extra }) });
+const status = t => { $('#status').textContent = t; $('#status').classList.toggle('hide', !t); };
+const setChat = on => ['#msg', '#sendBtn', '#report'].forEach(s => $(s).disabled = !on);
+const addMsg = (t, me) => { const d = document.createElement('div'); d.className = 'm' + (me ? ' me' : ''); d.textContent = t; $('#log').append(d); $('#log').scrollTop = 1e9; return d; };
+async function translate(t) {
+  const l = $('#lang').value; if (!l) return null;
+  try {
+    const r = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(t) + '&langpair=Autodetect|' + l);
+    const j = await r.json(), x = j.responseData && j.responseData.translatedText;
+    return j.responseStatus == 200 && x && x.toLowerCase() !== t.toLowerCase() ? x : null;
+  } catch { return null; }
+}
+function showIncoming(t) {
+  const el = addMsg(t, false);
+  translate(t).then(x => {
+    if (!x) return;
+    el.textContent = x;
+    const s = document.createElement('small'); s.textContent = t; s.style.cssText = 'display:block;color:var(--mute);margin-top:2px';
+    el.append(s);
+  });
+}
+
+$('#agree').onclick = () => $('#gate').remove();
+
+function cleanup() {
+  if (pc) { pc.close(); pc = null; }
+  pending = []; $('#remote').srcObject = null; $('#log').textContent = ''; setChat(false);
+}
+
+function connect(initiator) {
+  cleanup();
+  pc = new RTCPeerConnection({ iceServers: ice });
+  stream.getTracks().forEach(t => pc.addTrack(t, stream));
+  pc.ontrack = e => { $('#remote').srcObject = e.streams[0]; status(''); };
+  pc.onicecandidate = e => e.candidate && api('signal', { data: { c: e.candidate } });
+  setChat(true); status('Connecting…');
+  if (initiator) pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => api('signal', { data: { sdp: pc.localDescription } }));
+}
+
+async function onSignal(d) {
+  if (!pc) return;
+  if (d.sdp) {
+    await pc.setRemoteDescription(d.sdp);
+    pending.forEach(c => pc.addIceCandidate(c).catch(() => {})); pending = [];
+    if (d.sdp.type === 'offer') { await pc.setLocalDescription(await pc.createAnswer()); api('signal', { data: { sdp: pc.localDescription } }); }
+  } else if (d.c) {
+    pc.remoteDescription ? pc.addIceCandidate(d.c).catch(() => {}) : pending.push(d.c);
+  }
+}
+
+function onEvent(m) {
+  if (m.type === 'hello') { id = m.id; api('join', { tag }); }
+  else if (m.type === 'waiting') { cleanup(); status('Looking for someone…'); }
+  else if (m.type === 'matched') connect(m.initiator);
+  else if (m.type === 'signal') onSignal(m.data);
+  else if (m.type === 'chat') showIncoming(m.text);
+  else if (m.type === 'partner-left') { cleanup(); status('They left. Finding someone new…'); api('join', { tag }); }
+  else if (m.type === 'banned') { stop(); status('You were blocked after several reports.'); }
+}
+
+async function start() {
+  tag = $('#tag').value;
+  try { stream = stream || await navigator.mediaDevices.getUserMedia({ video: true, audio: true }); }
+  catch { return status('Allow camera and microphone access, then press Start again.'); }
+  $('#local').srcObject = stream;
+  try { ice = await (await fetch('/ice')).json(); } catch {}
+  es = new EventSource('/events'); es.onmessage = e => onEvent(JSON.parse(e.data));
+  es.onerror = () => { status('Connection lost. Press Start to try again.'); stop(true); };
+  $('#start').disabled = true; $('#next').disabled = $('#stop').disabled = false;
+  status('Connecting…');
+}
+
+function stop(quiet) {
+  if (es) { es.close(); es = null; }
+  cleanup(); $('#start').disabled = false; $('#next').disabled = $('#stop').disabled = true;
+  if (!quiet) status('Stopped. Press Start to find someone.');
+}
+
+$('#start').onclick = start;
+$('#stop').onclick = () => stop();
+$('#next').onclick = () => { cleanup(); status('Looking for someone…'); api('next'); };
+$('#report').onclick = () => { if (confirm('Report this person and move on?')) { cleanup(); status('Reported. Finding someone new…'); api('report'); } };
+const sendMsg = () => { const t = $('#msg').value.trim(); if (!t) return; api('chat', { text: t }); addMsg(t, true); $('#msg').value = ''; };
+$('#sendBtn').onclick = sendMsg;
+$('#msg').onkeydown = e => e.key === 'Enter' && sendMsg();
+</script>
+</body>
+</html>
